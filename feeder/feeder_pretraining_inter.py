@@ -1,8 +1,6 @@
 import pickle
 import torch
 import numpy as np
-
-np.set_printoptions(threshold=np.inf)
 import random
 
 try:
@@ -13,8 +11,8 @@ except:
 
 class Feeder(torch.utils.data.Dataset):
     """
-    Arguments:
-        data_path: the path to '.npy' data, the shape of data should be (N, C, T, V, M)
+    MoCo 双流数据加载器 (适配手部身份识别)
+    返回: (Seq_V1, Graph_V1, Seq_V2, Graph_V2)
     """
 
     def __init__(self,
@@ -22,27 +20,28 @@ class Feeder(torch.utils.data.Dataset):
                  num_frame_path,
                  l_ratio,
                  input_size,
-                 # input_representations, # 保持接口兼容，但在代码中逻辑已固定为双流
+                 # 兼容性参数 (options里可能会传，这里接住但不一定用)
+                 input_representations=None,
                  mmap=True,
-                 # 兼容性参数，防止options传入报错
                  label_path=None,
                  **kwargs):
 
         self.data_path = data_path
         self.num_frame_path = num_frame_path
         self.input_size = input_size
-        self.crop_resize = True
         self.l_ratio = l_ratio
 
         self.load_data(mmap)
+
         # 获取数据维度: N, C, T, V, M
         self.N, self.C, self.T, self.V, self.M = self.data.shape
-        print(f"[Feeder] Data Shape: {self.data.shape}, Samples: {len(self.number_of_frames)}")
-        print(f"[Feeder] Joints(V): {self.V}, Channels(C): {self.C}, Persons(M): {self.M}")
-        print(f"[Feeder] L_Ratio: {self.l_ratio}")
+
+        print(f"[Feeder Info] Data Shape: {self.data.shape}")
+        print(f"[Feeder Info] Joints(V)={self.V}, Persons(M)={self.M} => GRU Input Dim={self.C * self.V * self.M}")
 
     def load_data(self, mmap):
-        # data: N C T V M (注意：Deal2.py 生成的是 N, 3, T, 40, 1)
+        # data: N C T V M
+        # (注：如果 Deal2.py 生成的是 N,3,T,40,1，这里读出来的就是这个形状)
         if mmap:
             self.data = np.load(self.data_path, mmap_mode='r')
         else:
@@ -53,56 +52,49 @@ class Feeder(torch.utils.data.Dataset):
     def __len__(self):
         return self.N
 
-    def __iter__(self):
-        return self
-
     def __getitem__(self, index):
         # get raw input
         # input: C, T, V, M
         data_numpy = np.array(self.data[index])
         number_of_frames = self.number_of_frames[index]
 
-        # === View 1 Generation ===
-        # 1. Temporal Crop-Resize
-        data_numpy_v1_crop = augmentations.temporal_cropresize(data_numpy, number_of_frames, self.l_ratio,
-                                                               self.input_size)
+        # =========================================
+        # 生成 View 1 (Query)
+        # =========================================
+        # 1. 时域增强 (改变速度，不影响身份)
+        data_v1 = augmentations.temporal_cropresize(data_numpy, number_of_frames, self.l_ratio, self.input_size)
 
-        # 2. Spatial Augmentation (Randomly select)
+        # 2. 空域增强 (随机旋转 or 加噪)
+        # 严禁使用 Shear/Scale (会改变骨长)
         if random.random() < 0.5:
-            # 【关键修改】使用 random_rotate 替代 pose_augmentation(Shear)
-            # 旋转不改变骨长，适合身份识别任务
-            data_numpy_v1 = augmentations.random_rotate(data_numpy_v1_crop)
+            data_v1 = augmentations.random_rotate(data_v1)
         else:
-            # 关节加噪
-            data_numpy_v1 = augmentations.joint_courruption(data_numpy_v1_crop)
+            data_v1 = augmentations.joint_courruption(data_v1)
 
-        # === View 2 Generation ===
-        # 1. Temporal Crop-Resize
-        data_numpy_v2_crop = augmentations.temporal_cropresize(data_numpy, number_of_frames, self.l_ratio,
-                                                               self.input_size)
+        # =========================================
+        # 生成 View 2 (Key)
+        # =========================================
+        # 1. 时域增强
+        data_v2 = augmentations.temporal_cropresize(data_numpy, number_of_frames, self.l_ratio, self.input_size)
 
-        # 2. Spatial Augmentation
+        # 2. 空域增强
         if random.random() < 0.5:
-            data_numpy_v2 = augmentations.random_rotate(data_numpy_v2_crop)
+            data_v2 = augmentations.random_rotate(data_v2)
         else:
-            data_numpy_v2 = augmentations.joint_courruption(data_numpy_v2_crop)
+            data_v2 = augmentations.joint_courruption(data_v2)
 
-        # === Format Conversion for Model Inputs ===
-        # 无论 options 怎么填，我们这里固定输出 Sequence 和 Graph 两种格式，供给 MoCo 训练
+        # =========================================
+        # 格式转换：同时提供 Sequence 和 Graph 格式
+        # =========================================
 
-        # 1. Sequence-based input (GRU)
-        # Shape change: (C, T, V, M) -> (T, V, M, C) -> (T, V*M*C)
-        # 例如: (3, 64, 40, 1) -> (64, 40*1*3) = (64, 120)
-        input_s1_v1 = data_numpy_v1.transpose(1, 2, 3, 0)
-        input_s1_v1 = input_s1_v1.reshape(self.input_size, -1).astype('float32')
+        # 1. Graph Input (C, T, V, M) -> 保持原样，给 AGCN
+        graph_v1 = data_v1.astype('float32')
+        graph_v2 = data_v2.astype('float32')
 
-        input_s1_v2 = data_numpy_v2.transpose(1, 2, 3, 0)
-        input_s1_v2 = input_s1_v2.reshape(self.input_size, -1).astype('float32')
+        # 2. Sequence Input (T, Input_Dim) -> 给 GRU
+        # 动态计算维度，不再硬编码 150
+        # transpose: (C, T, V, M) -> (T, V, M, C) -> reshape (T, V*M*C)
+        seq_v1 = data_v1.transpose(1, 2, 3, 0).reshape(self.input_size, -1).astype('float32')
+        seq_v2 = data_v2.transpose(1, 2, 3, 0).reshape(self.input_size, -1).astype('float32')
 
-        # 2. Graph-based input (AGCN)
-        # Shape: (C, T, V, M) -> 保持不变 (3, 64, 40, 1)
-        input_s2_v1 = data_numpy_v1.astype('float32')
-        input_s2_v2 = data_numpy_v2.astype('float32')
-
-        # 返回 4 个 Tensor: (Seq_V1, Graph_V1, Seq_V2, Graph_V2)
-        return input_s1_v1, input_s2_v1, input_s1_v2, input_s2_v2
+        return seq_v1, graph_v1, seq_v2, graph_v2

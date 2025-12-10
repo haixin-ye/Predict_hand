@@ -57,11 +57,11 @@ class opts_yhx_pretrain:
         }
 
         # 3. 验证集 Feeder 配置 (Validation)
-        # 通常命名为 test_feeder_args 以匹配 dataset.py 的通用接口
-        self.test_feeder_args = {
-            'data_path': '/home/fx2/project/MoCo_hand/data_yhx/8group/AGCN_bianma—MLP_bianma/Adversarial_sample/0.01_test/npy_8:2_attacked/val_data_joint.npy',
-            'num_frame_path': '/home/fx2/project/MoCo_hand/data_yhx/8group/AGCN_bianma—MLP_bianma/Adversarial_sample/0.01_test/npy_8:2_attacked/val_num_frame.npy',
-            'label_path': '/home/fx2/project/MoCo_hand/data_yhx/8group/AGCN_bianma—MLP_bianma/Adversarial_sample/0.01_test/npy_8:2_attacked/val_label.npy',
+        # 通常命名为 val_feeder_args 以匹配 dataset.py 的通用接口
+        self.val_feeder_args = {
+            'data_path': '/home/fx2/project/MoCo_hand/data_yhx/8group/AGCN_bianma—AGCN_bianma/Identity verification/npy_8:2/val_data_joint.npy',
+            'num_frame_path': '/home/fx2/project/MoCo_hand/data_yhx/8group/AGCN_bianma—AGCN_bianma/Identity verification/npy_8:2/val_num_frame.npy',
+            'label_path': '/home/fx2/project/MoCo_hand/data_yhx/8group/AGCN_bianma—AGCN_bianma/Identity verification/npy_8:2/val_label.npy',
 
             'l_ratio': [0.1, 1],
             'input_size': 64,

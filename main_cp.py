@@ -125,8 +125,8 @@ def main_worker(gpu, ngpus_per_node, args):
         opts = options.opts_ntu_60_cross_view()  # Fallback
 
     # 强制同步命令行参数
-    opts.train_feeder_args['uniform_frame_length'] = args.frame
-    opts.val_feeder_args['uniform_frame_length'] = args.frame
+    # opts.train_feeder_args['uniform_frame_length'] = args.frame
+    # opts.val_feeder_args['uniform_frame_length'] = args.frame
     opts.train_feeder_args['input_size'] = 64  # 固定输入给 GRU/AGCN 的长度，推荐 64
 
     # 增强配置：Hard No-Box 的 feeder 需要 l_ratio 参数，我们在这里确保它存在
@@ -262,8 +262,8 @@ def train(train_loader, model, criterion, optimizer, epoch, args, device):
         loss = loss_seq + loss_graph
 
         # 统计精度 (Instance Discrimination Accuracy)
-        acc_s, _ = accuracy(logits_seq, labels_seq, topk=(1,))
-        acc_g, _ = accuracy(logits_graph, labels_graph, topk=(1,))
+        acc_s = accuracy(logits_seq, labels_seq, topk=(1,))
+        acc_g = accuracy(logits_graph, labels_graph, topk=(1,))
 
         # 更新仪表盘
         losses.update(loss.item(), input_s1_v1.size(0))
@@ -308,7 +308,8 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
     def __str__(self):
-        return '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
+        fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
+        return fmtstr.format(**self.__dict__)
 
 
 class ProgressMeter(object):

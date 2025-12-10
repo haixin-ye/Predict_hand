@@ -20,7 +20,7 @@ def get_finetune_training_set(opts):
 def get_finetune_validation_set(opts):
 
     from feeder.feeder_downstream import Feeder
-    data = Feeder(**opts.test_feeder_args)
+    data = Feeder(**opts.val_feeder_args)
 
     return data
 
