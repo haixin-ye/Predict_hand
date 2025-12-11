@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
-# Hard No-Box SSL Training Script (User's Body + Author's Brain)
+# Hard No-Box SSL Training Script (Fixed with KNN Validation)
 
 import os
 import argparse
@@ -42,6 +42,7 @@ import moco.builder_inter
 # === 引用你的 Body ===
 from dataset import get_pretraining_set_inter
 from dataset import get_finetune_validation_set
+from dataset import get_finetune_training_set  # 新增：用于KNN底库
 from options import options_pretraining as options
 
 # --------------------
@@ -49,9 +50,9 @@ from options import options_pretraining as options
 # --------------------
 parser = argparse.ArgumentParser(description='Hard No-Box MoCo Training')
 
-# 通用参数 (Your Body)
+# 通用参数
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number')
-parser.add_argument('--lr', default=0.01, type=float, help='initial learning rate')
+parser.add_argument('--lr', default=0.005, type=float, help='initial learning rate')  # 建议0.005适配BS=64
 parser.add_argument('--momentum', default=0.9, type=float, help='momentum')
 parser.add_argument('--weight-decay', default=1e-4, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path to latest checkpoint')
@@ -62,17 +63,17 @@ parser.add_argument('--checkpoint-path', default='./checkpoints_attack', type=st
 parser.add_argument('--epochs', default=350, type=int, help='number of total epochs')
 parser.add_argument('--frame', default=1000, type=int, help='number of frames')
 parser.add_argument('--num-workers', default=8, type=int, help='num of workers')
-parser.add_argument('--batch-size', default=16, type=int, help='mini-batch size')
+parser.add_argument('--batch-size', default=64, type=int, help='mini-batch size')
 parser.add_argument('--schedule', default=[160, 260], nargs='*', type=int, help='lr schedule')
 parser.add_argument('--print-freq', default=10, type=int, help='print frequency')
 
-# MoCo 核心参数 (Author's Brain)
+# MoCo 核心参数
 parser.add_argument('--moco-dim', default=128, type=int, help='feature dimension')
-parser.add_argument('--moco-k', default=16384, type=int, help='queue size; number of negative keys')
+parser.add_argument('--moco-k', default=1024, type=int, help='queue size')  # 建议1024或512
 parser.add_argument('--moco-m', default=0.999, type=float, help='moco momentum')
 parser.add_argument('--moco-t', default=0.07, type=float, help='softmax temperature')
-parser.add_argument('--mlp', action='store_true', help='use mlp head')
-parser.add_argument('--cos', action='store_true', help='use cosine lr schedule')
+parser.add_argument('--mlp', action='store_true', help='use mlp head')  # 建议开启，加上 --mlp
+parser.add_argument('--cos', action='store_true', help='use cosine lr schedule')  # 建议开启，加上 --cos
 
 # 增强开关
 parser.add_argument('--use-augmentation', default=True, type=bool, help='use augmentation')
@@ -93,7 +94,6 @@ def main():
         random.seed(args.seed)
         torch.manual_seed(args.seed)
         cudnn.deterministic = True
-        warnings.warn('You have chosen to seed training. This will turn on the CUDNN deterministic setting.')
 
     ngpus_per_node = torch.cuda.device_count()
     main_worker(args.gpu, ngpus_per_node, args)
@@ -109,7 +109,7 @@ def main_worker(gpu, ngpus_per_node, args):
         torch.cuda.set_device(args.gpu)
     device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
 
-    # === 路径管理 (Your Body Style) ===
+    # === 路径管理 ===
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     run_dir = os.path.join(args.checkpoint_path, f"run_hardnobox_{timestamp}")
     ckpt_dir = os.path.join(run_dir, "checkpoints")
@@ -118,27 +118,23 @@ def main_worker(gpu, ngpus_per_node, args):
     os.makedirs(tb_dir, exist_ok=True)
 
     # === 获取配置 ===
-    # 优先加载你的手部数据配置 opts_yhx_pretrain
     if hasattr(options, 'opts_yhx_pretrain'):
         opts = options.opts_yhx_pretrain()
     else:
-        opts = options.opts_ntu_60_cross_view()  # Fallback
+        print("Error: opts_yhx_pretrain not found in options_pretraining.py")
+        return
 
-    # 强制同步命令行参数
-    # opts.train_feeder_args['uniform_frame_length'] = args.frame
-    # opts.val_feeder_args['uniform_frame_length'] = args.frame
-    opts.train_feeder_args['input_size'] = 64  # 固定输入给 GRU/AGCN 的长度，推荐 64
-
-    # 增强配置：Hard No-Box 的 feeder 需要 l_ratio 参数，我们在这里确保它存在
+    # 强制同步参数
+    opts.train_feeder_args['input_size'] = 64
     if 'l_ratio' not in opts.train_feeder_args:
         opts.train_feeder_args['l_ratio'] = [0.1, 1]
 
-    # === 模型构建 (Author's Brain) ===
+    # === 模型构建 ===
     print(f"[Info] Creating Hard No-Box MoCo Model (AGCN + GRU)...")
     model = moco.builder_inter.MoCo(
-        skeleton_representation='seq-based_and_graph-based',  # 激活双流
-        args_bi_gru=opts.bi_gru_model_args,  # 你的 GRU 参数
-        args_agcn=opts.agcn_model_args,  # 你的 AGCN 参数
+        skeleton_representation='seq-based_and_graph-based',
+        args_bi_gru=opts.bi_gru_model_args,
+        args_agcn=opts.agcn_model_args,
         args_hcn=None,
         dim=args.moco_dim,
         K=args.moco_k,
@@ -148,9 +144,7 @@ def main_worker(gpu, ngpus_per_node, args):
     ).to(device)
 
     # Loss & Optimizer
-    # 原作者使用 CrossEntropyLoss 配合 builder_inter 返回的 (logits, labels)
     criterion = nn.CrossEntropyLoss().to(device)
-
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
@@ -164,16 +158,26 @@ def main_worker(gpu, ngpus_per_node, args):
         optimizer.load_state_dict(checkpoint['optimizer'])
         print(f"=> loaded checkpoint (epoch {checkpoint['epoch']})")
 
-    # === 数据加载 (Your Body) ===
-    # 注意：这里使用的是 get_pretraining_set_inter，它调用 feeder_pretraining_inter.py
-    # 该 feeder 现在返回 4 个 Tensor: (seq_v1, graph_v1, seq_v2, graph_v2)
+    cudnn.benchmark = True
+
+    # === 数据加载 ===
+    # 1. 训练集 (MoCo Update): 双视图，无标签返回
     train_dataset = get_pretraining_set_inter(opts)
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True,
         num_workers=args.num_workers, drop_last=True, persistent_workers=True)
 
-    # 验证集 (用于监控)
-    # 我们配置它只看 graph-based，用于 evaluate_closedset_knn
+    # 2. 内存集 (KNN Gallery): 训练集，无增强，带标签
+    # 我们使用 get_finetune_training_set (它调用 feeder_downstream，不带双视图增强)
+    # 注意：需要把 options 里的 train_feeder_args 复制给 memory loader 使用
+    # 但 feeder_downstream 需要 label_path，ensure it is in opts
+    memory_dataset = get_finetune_training_set(opts)
+    memory_loader = torch.utils.data.DataLoader(
+        memory_dataset, batch_size=args.batch_size, shuffle=False,
+        num_workers=args.num_workers, drop_last=False, persistent_workers=True)
+
+    # 3. 验证集 (KNN Query): 验证集，无增强，带标签
+    # 配置验证集使用 graph-based (因为我们只验证 AGCN 分支)
     opts.val_feeder_args['input_representation'] = 'graph-based'
     val_dataset = get_finetune_validation_set(opts)
     val_loader = torch.utils.data.DataLoader(
@@ -190,30 +194,35 @@ def main_worker(gpu, ngpus_per_node, args):
     for epoch in range(args.start_epoch, args.epochs):
         adjust_learning_rate(optimizer, epoch, args)
 
-        # === Train Step (Author's Logic inside Your Loop) ===
+        # === 训练 ===
         loss, acc_seq, acc_graph = train(
             train_loader, model, criterion, optimizer, epoch, args, device
         )
 
-        # 日志记录 (Your Style)
         writer.add_scalar('Train/Loss', loss, epoch)
-        writer.add_scalar('Train/Acc_Seq', acc_seq, epoch)
-        writer.add_scalar('Train/Acc_Graph', acc_graph, epoch)
+        writer.add_scalar('Train/InstDisc_Seq_Acc', acc_seq, epoch)
+        writer.add_scalar('Train/InstDisc_Graph_Acc', acc_graph, epoch)
 
-        # 打印信息
         print(f"Epoch [{epoch:03d}] Loss: {loss:.4f} | Seq Acc: {acc_seq:.2f}% | Graph Acc: {acc_graph:.2f}%")
 
-        # === Validation Step (Optional but recommended) ===
-        # 每隔几轮验证一次 AGCN 分支的 KNN 准确率
-        if (epoch % args.print_freq == 0) or (epoch == args.epochs - 1):
-            # 注意：如果你的 feeder_pretraining 不返回 label，这个 KNN 可能无法运行
-            # 这里假设你已经按我之前的建议修改了 feeder 或者是无监督 loss 监控
-            # 如果不想跑验证，可以注释掉下面两行
-            # val_acc = evaluate_closedset_knn_agcn(model, train_loader, val_loader, device)
-            # print(f"[Val] KNN Top1 (AGCN Branch): {val_acc:.4f}")
-            pass
+        # === KNN 验证 (Identity Recognition) ===
+        # 每 10 轮验证一次，或者最后几轮
+        if (epoch % args.print_freq == 0) or (epoch >= args.epochs - 5):
+            val_acc = evaluate_knn(model, memory_loader, val_loader, device)
+            print(f"[Validation] KNN Top-1 Accuracy: {val_acc:.2f}%")
+            writer.add_scalar('Val/KNN_Acc', val_acc, epoch)
 
-            # 保存 Checkpoint
+            # 保存最优模型
+            if val_acc > best_acc:
+                best_acc = val_acc
+                save_checkpoint({
+                    'epoch': epoch + 1,
+                    'state_dict': model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'best_acc': best_acc,
+                }, is_best=True, filename=os.path.join(ckpt_dir, f'checkpoint_{epoch:04d}.pth.tar'))
+
+        # 常规保存
         save_checkpoint({
             'epoch': epoch + 1,
             'state_dict': model.state_dict(),
@@ -223,7 +232,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
 def train(train_loader, model, criterion, optimizer, epoch, args, device):
     """
-    Hard No-Box 风格的训练循环：四路输入 -> 双流模型 -> 互对比 Loss
+    Hard No-Box MoCo Training Loop
     """
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
@@ -231,46 +240,37 @@ def train(train_loader, model, criterion, optimizer, epoch, args, device):
     top1_seq = AverageMeter('Acc@Seq', ':6.2f')
     top1_graph = AverageMeter('Acc@Graph', ':6.2f')
 
-    progress = ProgressMeter(
-        len(train_loader),
-        [batch_time, losses, top1_seq, top1_graph],
-        prefix="Epoch: [{}] LR: {:.4f}".format(epoch, optimizer.param_groups[0]['lr']))
-
     model.train()
     end = time.time()
 
-    # feeder 吐出 4 份数据 (如果你的 feeder 修改正确的话)
-    # 格式: (Seq_Q, Graph_Q, Seq_K, Graph_K)
     for i, (input_s1_v1, input_s2_v1, input_s1_v2, input_s2_v2) in enumerate(train_loader):
         data_time.update(time.time() - end)
 
-        # 搬运数据
-        input_s1_v1 = input_s1_v1.float().to(device, non_blocking=True)  # Seq View 1
-        input_s2_v1 = input_s2_v1.float().to(device, non_blocking=True)  # Graph View 1
-        input_s1_v2 = input_s1_v2.float().to(device, non_blocking=True)  # Seq View 2
-        input_s2_v2 = input_s2_v2.float().to(device, non_blocking=True)  # Graph View 2
+        # 搬运数据到 GPU
+        input_s1_v1 = input_s1_v1.float().to(device, non_blocking=True)
+        input_s2_v1 = input_s2_v1.float().to(device, non_blocking=True)
+        input_s1_v2 = input_s1_v2.float().to(device, non_blocking=True)
+        input_s2_v2 = input_s2_v2.float().to(device, non_blocking=True)
 
-        # === Author's Brain: Forward ===
-        # MoCo Forward 内部计算 query, key, queue, 和 logits
+        # Forward
         (logits_seq, logits_graph), (labels_seq, labels_graph) = model(
             input_s1_v1, input_s2_v1, input_s1_v2, input_s2_v2
         )
 
-        # === Author's Brain: Loss ===
+        # Loss
         loss_seq = criterion(logits_seq, labels_seq)
         loss_graph = criterion(logits_graph, labels_graph)
         loss = loss_seq + loss_graph
 
-        # 统计精度 (Instance Discrimination Accuracy)
-        acc_s = accuracy(logits_seq, labels_seq, topk=(1,))
-        acc_g = accuracy(logits_graph, labels_graph, topk=(1,))
+        # Metrics (Instance Discrimination Acc)
+        acc_s = accuracy(logits_seq, labels_seq, topk=(1,))[0]
+        acc_g = accuracy(logits_graph, labels_graph, topk=(1,))[0]
 
-        # 更新仪表盘
         losses.update(loss.item(), input_s1_v1.size(0))
-        top1_seq.update(acc_s[0].item(), input_s1_v1.size(0))
-        top1_graph.update(acc_g[0].item(), input_s1_v1.size(0))
+        top1_seq.update(acc_s.item(), input_s1_v1.size(0))
+        top1_graph.update(acc_g.item(), input_s1_v1.size(0))
 
-        # 反向传播
+        # Backward
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -279,17 +279,76 @@ def train(train_loader, model, criterion, optimizer, epoch, args, device):
         end = time.time()
 
         if i % args.print_freq == 0:
-            progress.display(i)
+            print(f"  Iter [{i}/{len(train_loader)}] Loss {losses.val:.4f} ({losses.avg:.4f})")
 
     return losses.avg, top1_seq.avg, top1_graph.avg
 
 
-# --------------------
-# 辅助函数 (Your Utilities)
-# --------------------
-class AverageMeter(object):
-    """Computes and stores the average and current value"""
+@torch.no_grad()
+def evaluate_knn(model, memory_loader, val_loader, device, k=1):
+    """
+    使用 KNN 验证 AGCN 分支的特征质量
+    """
+    model.eval()
+    train_features = []
+    train_labels = []
+    val_features = []
+    val_labels = []
 
+    # 1. 构建 Memory Bank (底库)
+    # 使用 feeder_downstream，它返回 (data, label, ...)
+    for batch in memory_loader:
+        if len(batch) == 3:
+            data, label, _ = batch
+        else:
+            data, label = batch
+        data = data.float().to(device)
+
+        # 只用 encoder_r (AGCN) 提取特征
+        # 注意: AGCN forward 需要支持 knn_eval 参数返回特征，或者默认返回
+        # 原作者代码 AGCN.forward 有 knn_eval 参数
+        feat = model.encoder_r(data, knn_eval=True)
+        feat = torch.nn.functional.normalize(feat, dim=1)
+
+        train_features.append(feat.cpu())
+        train_labels.append(label)
+
+    train_features = torch.cat(train_features, dim=0)
+    train_labels = torch.cat(train_labels, dim=0)
+
+    # 2. 提取验证集特征 (Query)
+    for batch in val_loader:
+        if len(batch) == 3:
+            data, label, _ = batch
+        else:
+            data, label = batch
+        data = data.float().to(device)
+
+        feat = model.encoder_r(data, knn_eval=True)
+        feat = torch.nn.functional.normalize(feat, dim=1)
+
+        val_features.append(feat.cpu())
+        val_labels.append(label)
+
+    val_features = torch.cat(val_features, dim=0)
+    val_labels = torch.cat(val_labels, dim=0)
+
+    # 3. 计算 KNN (K=1)
+    # 余弦相似度 = 归一化后的点积
+    sim_mat = torch.mm(val_features, train_features.t())
+    _, topk_idx = sim_mat.topk(k, dim=1, largest=True)
+
+    # 预测
+    topk_labels = train_labels[topk_idx]  # (N_val, K)
+    pred_labels = topk_labels[:, 0]  # K=1
+
+    correct = (pred_labels == val_labels).sum().item()
+    acc = correct / val_labels.size(0) * 100.0
+
+    return acc
+
+
+class AverageMeter(object):
     def __init__(self, name, fmt=':f'):
         self.name = name
         self.fmt = fmt

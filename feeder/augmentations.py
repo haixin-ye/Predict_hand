@@ -20,7 +20,7 @@ def joint_courruption(input_data, std=0.01):
         # 动态根据 V 的数量来决定 mask 多少个 (例如遮挡 10%-30% 的点)
         num_drop = random.randint(int(V * 0.1), int(V * 0.3))
         # 确保至少丢1个，或者如果V太小就不丢
-        num_drop = max(1, num_drop)
+        num_drop = max(1, 3)
 
         joint_indicies = np.random.choice(V, num_drop, replace=False)
         out[:, :, joint_indicies, :] = 0

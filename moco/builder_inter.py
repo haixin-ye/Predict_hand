@@ -23,7 +23,7 @@ class MoCo(nn.Module):
     Build a MoCo model with: a query encoder, a key encoder, and a queue
     https://arxiv.org/abs/1911.05722
     """
-    def __init__(self, skeleton_representation, args_bi_gru, args_agcn, args_hcn, dim=128, K=65536, m=0.999, T=0.07, mlp=False):
+    def __init__(self, skeleton_representation, args_bi_gru, args_agcn, args_hcn, dim=128, K=512, m=0.999, T=0.07, mlp=False):
         """
         skeleton_representations: pair of input skeleton representations for training (seq-based_and_graph-based or graph-based_and_image-based or seq-based_and_image-based )
         args_bi_gru: model parameters BIGRU

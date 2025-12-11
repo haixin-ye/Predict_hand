@@ -44,12 +44,12 @@ class opts_yhx_pretrain:
 
             # 【重要】原作者 feeder 需要的参数：
             # l_ratio: 时域裁剪的比例范围 [min, max]，用于模拟速度变化
-            'l_ratio': [0.1, 1],
+            'l_ratio': [0.6, 1],
 
             # input_size: 模型输入的固定帧数。
             # Feeder 会把你的 1000 帧裁剪/缩放成这个长度喂给模型。
             # 建议设为 64 (原作者设置)，既能节省显存，又能捕捉局部运动特征。
-            'input_size': 64,
+            'input_size': 128,
 
             # 你的 label_path 在预训练阶段其实不需要（SSL是无监督的），
             # 但为了防止报错可以留着，或者 feeder 会忽略它
@@ -64,7 +64,7 @@ class opts_yhx_pretrain:
             'label_path': '/home/fx2/project/MoCo_hand/data_yhx/8group/AGCN_bianma—AGCN_bianma/Identity verification/npy_8:2/val_label.npy',
 
             'l_ratio': [0.1, 1],
-            'input_size': 64,
+            'input_size': 128,
 
             # 验证时通常只看 Graph 分支的表现
             'input_representation': 'graph-based'
